@@ -25,7 +25,7 @@ class DVTDataset(Dataset):
         """
 
         self.annotation_map = pd.read_csv(csv_file)
-        p = transforms.Compose([transforms.ToPILImage(), transforms.Scale((224, 224)), transforms.ToTensor()])
+        p = transforms.Compose([transforms.ToPILImage(), transforms.Scale((512, 512)), transforms.ToTensor()])
 
         self.root_dir = root_dir
         self.transform = p
@@ -36,6 +36,15 @@ class DVTDataset(Dataset):
     def __getitem__(self, idx):
         if torch.is_tensor(idx):
             idx = idx.tolist()
+
+        def create2Dpatches(seg_arr_2d, pixel_size, num_blocks=16):
+            sep_arr = np.linspace(start=0, stop=pixel_size, num=num_blocks + 1, dtype=int)
+            zero_arr = np.zeros((num_blocks, num_blocks))
+            for i in range(len(sep_arr) - 1):
+                for j in range(len(sep_arr) - 1):
+                    zero_arr[i, j] = np.sum(seg_arr_2d[sep_arr[i]:sep_arr[i + 1], sep_arr[j]:sep_arr[j + 1]])
+            final_arr = np.where(zero_arr == np.max(zero_arr), 1, 0)
+            return (final_arr)
 
         # img_name = self.annotation_map.loc[idx, "reference_image_filename"]
         img_path = str(self.annotation_map.loc[idx, "reference_image_filename"])
@@ -51,19 +60,33 @@ class DVTDataset(Dataset):
         name = self.annotation_map.loc[idx, "patient_name"]
         clean_label = self.annotation_map.loc[idx, "clean_label"]
         slice_num = self.annotation_map.loc[idx, "slice_number_in_seg_file"]
+        segmentation_file = "annotations_full/" + self.annotation_map.loc[idx, "segmentation_file"]
+        segmentation = pydicom.dcmread(segmentation_file)
+        if len(segmentation.pixel_array.shape) == 3:
+            seg_array = segmentation.pixel_array[int(self.annotation_map.loc[idx, "slice_number_in_seg_file"]), :, :]
+            img_array = np.reshape(img_array, (img_array.shape[0], img_array.shape[1], 1))
 
-        img_array = np.reshape(img_array, (img_array.shape[0], img_array.shape[1], 1))
+            # img_array = torch.reshape(torch.tensor(img_array), (1, img_array.shape[0], img_array.shape[1]))
+            # img_array = np.reshape(img_array, (1, img_array.shape[0], img_array.shape[1]))
+            # print(img_array.shape)
+            img_array = self.transform(np.float32(img_array)).numpy()
+            seg_array = self.transform(np.float32(seg_array)).numpy()
+            seg_array = np.squeeze(seg_array, axis=0)
 
-        # img_array = torch.reshape(torch.tensor(img_array), (1, img_array.shape[0], img_array.shape[1]))
-        # img_array = np.reshape(img_array, (1, img_array.shape[0], img_array.shape[1]))
-        # print(img_array.shape)
-        img_array = self.transform(np.float32(img_array)).numpy()
-
-        sample = {'image': img_array, 'access_number': access_number, 'label': clean_label, 'slice_num': slice_num}
-
+            pixel_size = seg_array.shape[0]
+            if (seg_array.shape) != (pixel_size, pixel_size):
+                print("hits wrong")
+                patch_array = None
+            else:
+                patch_array = create2Dpatches(seg_array, pixel_size)
+            sample = {'image': img_array, 'access_number': access_number, 'label': clean_label, 'slice_num': slice_num,
+                      "segmentation": seg_array, "patch_array": patch_array}
+        else:
+            sample = None
         return sample
 
     def preprocess_image(self, image):
+
         image -= self.meanThe
         image /= self.std
         return image
